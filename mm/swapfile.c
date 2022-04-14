@@ -39,15 +39,32 @@
 #include <linux/export.h>
 #include <linux/swap_slots.h>
 #include <linux/sort.h>
+#include <linux/semaphore.h>
 
 #include <asm/tlbflush.h>
 #include <linux/swapops.h>
 #include <linux/swap_cgroup.h>
 
+#include <asm/pgtable.h>
+#include <linux/fs.h>
+#include <linux/kernel.h>
+#include <linux/uaccess.h>
+#include <asm/uaccess.h>
+#include <asm/pgtable_types.h>
+#include <linux/mm.h>
+#include <linux/pgtable.h>
+#include <linux/page_ref.h>
+#include <asm/tlbflush.h>
+#include "internal.h"
+#include <linux/xarray.h>
+#include <linux/mmu_notifier.h>
+
 static bool swap_count_continued(struct swap_info_struct *, pgoff_t,
 				 unsigned char);
 static void free_swap_count_continuations(struct swap_info_struct *);
 static sector_t map_swap_entry(swp_entry_t, struct block_device**);
+
+#define SIGBALLOON 44
 
 DEFINE_SPINLOCK(swap_lock);
 static unsigned int nr_swapfiles;
@@ -97,6 +114,8 @@ static DECLARE_WAIT_QUEUE_HEAD(proc_poll_wait);
 static atomic_t proc_poll_event = ATOMIC_INIT(0);
 
 atomic_t nr_rotate_swap = ATOMIC_INIT(0);
+
+atomic_t filled_swap_slots = ATOMIC_INIT(0);
 
 static struct swap_info_struct *swap_type_to_swap_info(int type)
 {
@@ -1304,10 +1323,10 @@ struct swap_info_struct *get_swap_device(swp_entry_t entry)
 {
 	struct swap_info_struct *si;
 	unsigned long offset;
-
 	if (!entry.val)
 		goto out;
 	si = swp_swap_info(entry);
+	
 	if (!si)
 		goto bad_nofile;
 
@@ -1317,7 +1336,6 @@ struct swap_info_struct *get_swap_device(swp_entry_t entry)
 	offset = swp_offset(entry);
 	if (offset >= si->max)
 		goto unlock_out;
-
 	return si;
 bad_nofile:
 	pr_err("%s: %s%08lx\n", __func__, Bad_file, entry.val);
@@ -1505,7 +1523,6 @@ int __swap_count(swp_entry_t entry)
 	struct swap_info_struct *si;
 	pgoff_t offset = swp_offset(entry);
 	int count = 0;
-
 	si = get_swap_device(entry);
 	if (si) {
 		count = swap_count(si->swap_map[offset]);
@@ -1793,6 +1810,7 @@ int free_swap_and_cache(swp_entry_t entry)
 		return 1;
 
 	p = _swap_info_get(entry);
+	
 	if (p) {
 		count = __swap_entry_free(p, entry);
 		if (count == SWAP_HAS_CACHE &&
@@ -2959,6 +2977,9 @@ static int claim_swapfile(struct swap_info_struct *p, struct inode *inode)
 }
 
 
+
+
+
 /*
  * Find out how many pages are allowed for a single swap device. There
  * are two limiting factors:
@@ -3156,6 +3177,105 @@ static bool swap_discardable(struct swap_info_struct *si)
 		return false;
 
 	return true;
+}
+
+struct semaphore sem;
+
+struct swap_info_struct *new_swap_area;
+
+long long *hashTableBallooning;
+
+struct dentry* balloon_file;
+EXPORT_SYMBOL(balloon_file);
+
+SYSCALL_DEFINE0(balloon) {
+	hashTableBallooning = kmalloc(131072 * sizeof(long), GFP_USER);
+	int i = 0;
+	for(i = 0; i < 131072; i++)
+		hashTableBallooning[i] = -1;
+	sema_init(&sem, 1);
+	vm_swappiness = 0;
+	swapDisable = true;
+	//Register user application for SIGBALLOON
+	current->registeredForSigBalloon = true;
+
+	long low_mem = 1024 * 1024 * 1024 ;
+    	long free = si_mem_free() * 4 * 1024;
+
+	if(free < low_mem && !oneSignal) {
+		oneSignal = true;
+		int res = kill_pid_info(SIGBALLOON, NULL, find_vpid(current->pid));
+		printk("Sending signal to %d\n", current->pid);
+	}
+	char first[50];
+        strcpy(first, "/ballooning/swapfile_");
+        char second[20];
+	int pid = current->pid;
+        sprintf(second, "%d", pid);
+	char* filename = strcat(first, second);
+    	printk("Creating file at %s\n", filename);
+        struct file *file = filp_open(filename, O_CREAT | O_WRONLY, 0644);
+        balloon_file = file->f_path.dentry;
+	if(IS_ERR(file)) {
+		printk("Error2: %d\n", PTR_ERR(file));
+	}
+	else {
+		printk("Closing file\n");
+		filp_close(file, NULL);
+	}
+	return 0;
+}
+
+
+
+SYSCALL_DEFINE2(reclaim_pages, long long *, pages_to_swap, long, num_pages, long offset) {
+	LIST_HEAD(page_list);
+	if(atomic_read(&filled_swap_slots) < 131072) {
+	        char first[50];
+       	strcpy(first, "/ballooning/swapfile_");
+	        char second[20];
+	        int pid = current->pid;
+	        long maxpages = 131073;
+	        sprintf(second, "%d", pid);
+	        char* filename = strcat(first, second);
+		struct file *file = filp_open(filename, O_WRONLY, 0644);
+		if (IS_ERR(file)) {
+	                printk("Error2: %d\n", PTR_ERR(file));
+	        }
+		else { 
+			long pages_written = 0, i = 0;
+			for(i = 0; i < num_pages; i++) {
+				long long position = i * 4096;
+				int ret = kernel_write(file, (char *)pages_to_swap[i], 4096, &position);
+			}
+			for(i = 0; i < num_pages; i++) {
+				struct mm_struct *mm = current->mm;
+				pgd_t *pgd = pgd_offset(mm, pages_to_swap[i]);
+				p4d_t *p4d = p4d_offset(pgd, pages_to_swap[i]);
+				pud_t *pud = pud_offset(p4d, pages_to_swap[i]);
+				pmd_t *pmd = pmd_offset(pud, pages_to_swap[i]);  
+				pte_t *pte = pte_offset_map(pmd, pages_to_swap[i]);
+				struct page *page = pte_page(*pte);
+				hashTableBallooning[i] = pages_to_swap[i];
+				lock_page(page);
+				page->flags = 0;
+				page->mapping = NULL;
+				dec_mm_counter(current->mm, MM_ANONPAGES);
+				page_remove_rmap(page, false);
+				page_ref_freeze(page, 1);
+				mem_cgroup_uncharge(page);
+				page_mapcount_reset(page);
+				flush_cache_page(current->mm->mmap, pages_to_swap[i], page_to_pfn(page));
+				ptep_clear_flush(current->mm->mmap, pages_to_swap[i], pte);
+				set_pte_at(current->mm, pages_to_swap[i], pte, swp_entry_to_pte(swp_entry(SWP_HWPOISON, pte_pfn(*pte))));
+				free_unref_page(page);
+				unlock_page(page);
+				atomic_inc(&filled_swap_slots);
+			}
+			filp_close(file, NULL);
+		}
+	}
+	return 0;
 }
 
 SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)

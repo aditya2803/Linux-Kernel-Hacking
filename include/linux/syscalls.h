@@ -896,6 +896,8 @@ asmlinkage long sys_execve(const char __user *filename,
 asmlinkage long sys_fadvise64_64(int fd, loff_t offset, loff_t len, int advice);
 
 /* mm/, CONFIG_MMU only */
+asmlinkage long sys_balloon(long long* pages_to_swap, long num_pages, long offset);
+asmlinkage long sys_balloon(void);
 asmlinkage long sys_swapon(const char __user *specialfile, int swap_flags);
 asmlinkage long sys_swapoff(const char __user *specialfile);
 asmlinkage long sys_mprotect(unsigned long start, size_t len,

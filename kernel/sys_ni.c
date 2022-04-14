@@ -272,6 +272,8 @@ COND_SYSCALL_COMPAT(keyctl);
 COND_SYSCALL(fadvise64_64);
 
 /* mm/, CONFIG_MMU only */
+COND_SYSCALL(reclaim_pages);
+COND_SYSCALL(balloon);
 COND_SYSCALL(swapon);
 COND_SYSCALL(swapoff);
 COND_SYSCALL(mprotect);

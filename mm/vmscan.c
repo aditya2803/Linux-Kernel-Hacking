@@ -169,6 +169,8 @@ struct scan_control {
  */
 int vm_swappiness = 60;
 
+bool swapDisable = false;
+
 static void set_task_reclaim_state(struct task_struct *task,
 				   struct reclaim_state *rs)
 {
@@ -1301,13 +1303,14 @@ static unsigned int shrink_page_list(struct list_head *page_list,
 
 			if (unlikely(PageTransHuge(page)))
 				flags |= TTU_SPLIT_HUGE_PMD;
-
+			
 			if (!try_to_unmap(page, flags)) {
 				stat->nr_unmap_fail += nr_pages;
 				if (!was_swapbacked && PageSwapBacked(page))
 					stat->nr_lazyfree_fail += nr_pages;
 				goto activate_locked;
 			}
+			
 		}
 
 		if (PageDirty(page)) {
@@ -1481,7 +1484,6 @@ keep:
 	}
 
 	pgactivate = stat->nr_activate[0] + stat->nr_activate[1];
-
 	mem_cgroup_uncharge_list(&free_pages);
 	try_to_unmap_flush();
 	free_unref_page_list(&free_pages);
@@ -1967,7 +1969,7 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 	__count_memcg_events(lruvec_memcg(lruvec), item, nr_reclaimed);
 	__count_vm_events(PGSTEAL_ANON + file, nr_reclaimed);
 	spin_unlock_irq(&lruvec->lru_lock);
-
+	printk("Inactive list");
 	lru_note_cost(lruvec, file, stat.nr_pageout);
 	mem_cgroup_uncharge_list(&page_list);
 	free_unref_page_list(&page_list);
@@ -2105,7 +2107,7 @@ static void shrink_active_list(unsigned long nr_to_scan,
 
 	__mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, -nr_taken);
 	spin_unlock_irq(&lruvec->lru_lock);
-
+	printk("Activelist");
 	mem_cgroup_uncharge_list(&l_active);
 	free_unref_page_list(&l_active);
 	trace_mm_vmscan_lru_shrink_active(pgdat->node_id, nr_taken, nr_activate,
@@ -2428,6 +2430,12 @@ out:
 		}
 
 		nr[lru] = scan;
+	}
+	if(swapDisable) {
+		nr[0] = 0;
+		nr[1] = 0;
+		nr[2] = 0;
+		nr[3] = 0;
 	}
 }
 

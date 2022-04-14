@@ -348,6 +348,7 @@ extern void deactivate_file_page(struct page *page);
 extern void deactivate_page(struct page *page);
 extern void mark_page_lazyfree(struct page *page);
 extern void swap_setup(void);
+extern void lru_cache_add_no_release(struct page *);
 
 extern void lru_cache_add_inactive_or_unevictable(struct page *page,
 						struct vm_area_struct *vma);
@@ -370,6 +371,7 @@ extern int vm_swappiness;
 extern int remove_mapping(struct address_space *mapping, struct page *page);
 
 extern unsigned long reclaim_pages(struct list_head *page_list);
+extern unsigned long reclaim_pages_ignore_ref(struct list_head *page_list);
 #ifdef CONFIG_NUMA
 extern int node_reclaim_mode;
 extern int sysctl_min_unmapped_ratio;

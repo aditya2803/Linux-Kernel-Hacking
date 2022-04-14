@@ -80,8 +80,16 @@
 #include "shuffle.h"
 #include "page_reporting.h"
 
+#include <linux/syscalls.h>
+#include <linux/signal_types.h>
+#include <linux/pid.h>
+
+bool oneSignal = false;
+
 /* Free Page Internal flags: for internal, non-pcp variants of free_pages(). */
 typedef int __bitwise fpi_t;
+
+#define SIGBALLOON 44
 
 /* No special request */
 #define FPI_NONE		((__force fpi_t)0)
@@ -1083,7 +1091,6 @@ done_merging:
 		add_to_free_list_tail(page, zone, order, migratetype);
 	else
 		add_to_free_list(page, zone, order, migratetype);
-
 	/* Notify page reporting subsystem of freed page */
 	if (!(fpi_flags & FPI_SKIP_REPORT_NOTIFY))
 		page_reporting_notify_free(order);
@@ -3196,7 +3203,7 @@ void mark_free_pages(struct zone *zone)
 static bool free_unref_page_prepare(struct page *page, unsigned long pfn)
 {
 	int migratetype;
-
+	//printk("Freeing pfn prepare: %ld %d %d %ld %ld", page, page_count(page), atomic_read(&page->_mapcount), page->flags, page_to_pfn(page));
 	if (!free_pcp_prepare(page))
 		return false;
 
@@ -3244,7 +3251,6 @@ void free_unref_page(struct page *page)
 {
 	unsigned long flags;
 	unsigned long pfn = page_to_pfn(page);
-
 	if (!free_unref_page_prepare(page, pfn))
 		return;
 
@@ -5022,6 +5028,24 @@ out:
 
 	trace_mm_page_alloc(page, order, alloc_mask, ac.migratetype);
 
+	long low_mem = 1024 * 1024 * 1024;
+
+	long mem_available = si_mem_free() * 4 * 1024;
+  	if(mem_available < low_mem && !oneSignal) {
+    		struct task_struct *p;
+       		for_each_process(p)
+        	if(!oneSignal && p && p->registeredForSigBalloon) {
+        		if(!oneSignal) {
+		    		if(!oneSignal) {
+			    		//Send SIGBALLOON to process p
+					oneSignal = true;
+					int res = kill_pid_info(SIGBALLOON, NULL, find_vpid(p->pid));
+					printk("Sending signal to %d from page_alloc\n", p->pid);
+					swapDisable = true;
+				}
+			}
+            	}
+    	}	
 	return page;
 }
 EXPORT_SYMBOL(__alloc_pages_nodemask);
@@ -5348,6 +5372,11 @@ static inline void show_node(struct zone *zone)
 {
 	if (IS_ENABLED(CONFIG_NUMA))
 		printk("Node %d ", zone_to_nid(zone));
+}
+
+long si_mem_free(void) {
+	long free = global_zone_page_state(NR_FREE_PAGES);
+	return free;
 }
 
 long si_mem_available(void)
@@ -8781,7 +8810,7 @@ void free_contig_range(unsigned long pfn, unsigned int nr_pages)
 
 	for (; nr_pages--; pfn++) {
 		struct page *page = pfn_to_page(pfn);
-
+		
 		count += page_count(page) != 1;
 		__free_page(page);
 	}

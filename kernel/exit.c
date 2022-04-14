@@ -69,6 +69,8 @@
 #include <asm/unistd.h>
 #include <asm/mmu_context.h>
 
+extern struct dentry* balloon_file;
+
 static void __unhash_process(struct task_struct *p, bool group_dead)
 {
 	nr_threads--;
@@ -660,6 +662,12 @@ static void forget_original_parent(struct task_struct *father,
  */
 static void exit_notify(struct task_struct *tsk, int group_dead)
 {
+	if(tsk->registeredForSigBalloon) {
+        swapDisable = false;
+        oneSignal = false;
+    	vfs_unlink(balloon_file->d_parent->d_inode, balloon_file, NULL);
+	}
+
 	bool autoreap;
 	struct task_struct *p, *n;
 	LIST_HEAD(dead);
@@ -671,6 +679,7 @@ static void exit_notify(struct task_struct *tsk, int group_dead)
 		kill_orphaned_pgrp(tsk->group_leader, NULL);
 
 	tsk->exit_state = EXIT_ZOMBIE;
+	
 	if (unlikely(tsk->ptrace)) {
 		int sig = thread_group_leader(tsk) &&
 				thread_group_empty(tsk) &&
@@ -874,6 +883,7 @@ void __noreturn do_exit(long code)
 
 	lockdep_free_task(tsk);
 	do_task_dead();
+
 }
 EXPORT_SYMBOL_GPL(do_exit);
 

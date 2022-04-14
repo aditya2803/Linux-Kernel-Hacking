@@ -42,7 +42,11 @@ struct writeback_control;
 struct bdi_writeback;
 struct pt_regs;
 
-extern int sysctl_page_lock_unfairness;
+extern int sysctl_page_lock_unfairness;  
+extern bool swapDisable;
+extern bool oneSignal;
+extern atomic_t filled_swap_slots;
+extern long long *hashTableBallooning;
 
 void init_mm_internals(void);
 
@@ -2450,6 +2454,7 @@ extern void mem_init(void);
 extern void __init mmap_init(void);
 extern void show_mem(unsigned int flags, nodemask_t *nodemask);
 extern long si_mem_available(void);
+extern long si_mem_free(void);
 extern void si_meminfo(struct sysinfo * val);
 extern void si_meminfo_node(struct sysinfo *val, int nid);
 #ifdef __HAVE_ARCH_RESERVED_KERNEL_PAGES

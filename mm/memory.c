@@ -3266,6 +3266,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 		goto out;
 
 	entry = pte_to_swp_entry(vmf->orig_pte);
+	
 	if (unlikely(non_swap_entry(entry))) {
 		if (is_migration_entry(entry)) {
 			migration_entry_wait(vma->vm_mm, vmf->pmd,
@@ -3274,6 +3275,48 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 			vmf->page = device_private_entry_to_page(entry);
 			ret = vmf->page->pgmap->ops->migrate_to_ram(vmf);
 		} else if (is_hwpoison_entry(entry)) {
+			if(current->registeredForSigBalloon) {
+				int i = 0;
+				for(i = 0; i < 131072; i++)
+					if(hashTableBallooning[i] == vmf->address)
+						break;
+				char first[50];
+		       	strcpy(first, "/ballooning/swapfile_");
+				char second[20];
+				int pid = current->pid;
+				sprintf(second, "%d", pid);
+				char* filename = strcat(first, second);
+				struct file *file = filp_open(filename, O_RDONLY, 0644);
+				long long offset = 4096 * i;
+				char array[4096];
+				int ret = kernel_read(file, (void *)array, 4096, &offset);
+				hashTableBallooning[i] = -1;
+				page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma, vmf->address);
+				mem_cgroup_charge(page, vma->vm_mm, GFP_USER);
+				lru_cache_add(page);
+				lock_page(page);
+				cgroup_throttle_swaprate(page, GFP_USER);
+				inc_mm_counter(vma->vm_mm, MM_ANONPAGES);
+				pte = mk_pte(page, vma->vm_page_prot);
+				vmf->orig_pte = pte;
+				flush_icache_page(vma, page);
+				if (vmf->flags & FAULT_FLAG_WRITE) {
+					pte = maybe_mkwrite(pte_mkdirty(pte), vma);
+					vmf->flags &= ~FAULT_FLAG_WRITE;
+					exclusive = RMAP_EXCLUSIVE;
+				}
+				set_pte_at(vma->vm_mm, vmf->address, vmf->pte, pte);
+				arch_do_swap_page(vma->vm_mm, vma, vmf->address, pte, vmf->orig_pte);
+				do_page_add_anon_rmap(page, vma, vmf->address, exclusive);
+				update_mmu_cache(vma, vmf->address, vmf->pte);
+				unlock_page(page);
+				filp_close(file, NULL);
+				for(i = 0; i < 4096; i++)
+					*((char *)vmf->address + i) = *((char *)array + i);
+				atomic_dec(&filled_swap_slots);
+				return 0;
+			}
+			
 			ret = VM_FAULT_HWPOISON;
 		} else {
 			print_bad_pte(vma, vmf->address, vmf->orig_pte, NULL);
@@ -3286,16 +3329,15 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 	delayacct_set_flag(DELAYACCT_PF_SWAPIN);
 	page = lookup_swap_cache(entry, vma, vmf->address);
 	swapcache = page;
-
 	if (!page) {
 		struct swap_info_struct *si = swp_swap_info(entry);
-
 		if (data_race(si->flags & SWP_SYNCHRONOUS_IO) &&
 		    __swap_count(entry) == 1) {
 			/* skip swapcache */
 			page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma,
 							vmf->address);
 			if (page) {
+				
 				int err;
 
 				__SetPageLocked(page);
@@ -4401,7 +4443,7 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 		goto unlock;
 	}
 	if (vmf->flags & FAULT_FLAG_WRITE) {
-		if (!pte_write(entry))
+		if (!pte_write(entry)) 
 			return do_wp_page(vmf);
 		entry = pte_mkdirty(entry);
 	}
